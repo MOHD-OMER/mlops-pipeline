@@ -1,0 +1,130 @@
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MLOps Pipeline — Docker Compose
+#
+# Services:
+#   mlflow    — experiment tracking UI  (localhost:5000)
+#   api       — FastAPI model server    (localhost:8000)
+#   monitor   — one-shot drift check    (exits after run)
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  mlops_net:
+    driver: bridge
+
+volumes:
+  mlflow_data:
+
+services:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # MLflow tracking server
+  # ─────────────────────────────────────────────────────────────────────────
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.8.1
+    container_name: mlops_mlflow
+    command: >
+      mlflow server
+        --host 0.0.0.0
+        --port 5000
+        --backend-store-uri sqlite:///mlruns/mlflow.db
+        --default-artifact-root /mlruns/artifacts
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/mlruns
+    networks:
+      - mlops_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # FastAPI model serving
+  # ─────────────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: mlops_api
+    ports:
+      - "8000:8000"
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - PYTHONUNBUFFERED=1
+      - PYTHONUTF8=1
+    volumes:
+      - ./models:/app/models:ro          # ← bind mount your existing pkl
+      - ./data/processed:/app/data/processed:ro
+      - ./params.yaml:/app/params.yaml:ro
+      - ./reports:/app/reports
+    networks:
+      - mlops_net
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+  # ─────────────────────────────────────────────────────────────────────────
+  # Training job (one-shot, exits after completion)
+  # ─────────────────────────────────────────────────────────────────────────
+  train:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    container_name: mlops_train
+    command: >
+      sh -c "
+        pip install -q datasets dvc &&
+        python src/ingest.py &&
+        python src/preprocess.py &&
+        python src/train.py
+      "
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+      - ./params.yaml:/app/params.yaml
+      - model_artifacts:/app/models
+      - ./reports:/app/reports
+    networks:
+      - mlops_net
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    profiles:
+      - train   # only starts with: docker compose --profile train up train
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Drift monitoring (one-shot)
+  # ─────────────────────────────────────────────────────────────────────────
+  monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    container_name: mlops_monitor
+    command: >
+      sh -c "pip install -q evidently && python monitoring/monitor.py"
+    volumes:
+      - ./data/processed:/app/data/processed:ro
+      - ./monitoring:/app/monitoring
+      - ./params.yaml:/app/params.yaml
+      - ./reports:/app/reports
+    networks:
+      - mlops_net
+    profiles:
+      - monitor   # docker compose --profile monitor up monitor

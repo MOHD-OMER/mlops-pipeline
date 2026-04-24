@@ -1,0 +1,33 @@
+data:
+  dataset: "ag_news"          # or "truthlens"
+  test_size: 0.15
+  val_size: 0.15
+  random_state: 42
+  max_samples: 10000          # set null to use full dataset
+
+model:
+  type: "tfidf_lr"            # options: tfidf_lr | tfidf_svm | distilbert
+  max_features: 50000
+  ngram_range: [1, 2]
+
+training:
+  learning_rate: 0.01
+  C: 1.0                      # regularization for LR/SVM
+  max_iter: 1000
+  class_weight: "balanced"
+
+mlflow:
+  experiment_name: "news-classification-mlops"
+  tracking_uri: "http://mlflow:5000"  
+  registered_model_name: "news_classifier"
+  accuracy_threshold: 0.88   # min accuracy to register model
+
+serving:
+  host: "0.0.0.0"
+  port: 8000
+  model_stage: "Production"
+
+monitoring:
+  drift_threshold: 0.15      # PSI threshold to trigger alert
+  reference_data: "data/processed/train.csv"
+  report_path: "reports/drift_report.html"

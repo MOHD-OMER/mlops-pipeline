@@ -1,0 +1,323 @@
+name: MLOps Pipeline CI/CD
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Triggers:
+#   • Push to main branch (src, tests, monitoring, data, config, Docker changes)
+#   • Pull requests to main
+#   • Manual workflow dispatch with optional inputs
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "monitoring/**"
+      - "data/**"
+      - "params.yaml"
+      - "requirements.txt"
+      - "Dockerfile"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force_train:
+        description: "Force model retraining"
+        required: false
+        default: "false"
+      accuracy_threshold:
+        description: "Min accuracy to register model (0-1)"
+        required: false
+        default: "0.88"
+
+env:
+  PYTHON_VERSION: "3.10"
+  MLFLOW_TRACKING_URI: "http://localhost:5000"
+  IMAGE_NAME: ${{ github.repository_owner }}/mlops-news-classifier
+
+jobs:
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Job 1: Lint & Unit Tests
+  # ───────────────────────────────────────────────────────────────────────────
+  test:
+    name: 🧪 Lint & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install \
+            scikit-learn numpy pandas fastapi "uvicorn[standard]" pydantic \
+            mlflow joblib pyyaml matplotlib seaborn \
+            pytest pytest-asyncio httpx evidently
+
+      - name: Generate synthetic CI data (no HuggingFace download needed)
+        run: |
+          python - <<'EOF'
+          import pandas as pd
+          from pathlib import Path
+
+          texts = [
+              "Stock market rose on earnings reports financial business revenue",
+              "Football championship won by national team sports trophy league",
+              "Scientists discover quantum computing breakthrough research lab",
+              "World leaders summit climate change policy environment global",
+          ] * 300
+
+          labels = ([0]*300 + [1]*300 + [2]*300 + [3]*300)
+          label_map = {0: "World", 1: "Business", 2: "Sports", 3: "Sci/Tech"}
+          label_names = [label_map[l] for l in labels]
+
+          df = pd.DataFrame({"text": texts, "label": labels, "label_name": label_names})
+          df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+
+          n = len(df)
+          train = df[:int(0.7*n)]
+          val   = df[int(0.7*n):int(0.85*n)]
+          test  = df[int(0.85*n):]
+
+          Path("data/processed").mkdir(parents=True, exist_ok=True)
+          train.to_csv("data/processed/train.csv", index=False)
+          val.to_csv("data/processed/val.csv",     index=False)
+          test.to_csv("data/processed/test.csv",   index=False)
+          print(f"CI data: train={len(train)} val={len(val)} test={len(test)}")
+          EOF
+
+      - name: Run data tests
+        run: pytest tests/test_data.py -v --tb=short
+        env:
+          PYTHONUTF8: "1"
+
+      - name: Train quick CI model
+        run: |
+          python - <<'EOF'
+          import pandas as pd, joblib
+          from pathlib import Path
+          from sklearn.pipeline import Pipeline
+          from sklearn.feature_extraction.text import TfidfVectorizer
+          from sklearn.linear_model import LogisticRegression
+
+          train = pd.read_csv("data/processed/train.csv")
+          pipe = Pipeline([
+              ("tfidf", TfidfVectorizer(max_features=5000)),
+              ("clf",   LogisticRegression(max_iter=500, C=1.0)),
+          ])
+          pipe.fit(train["text"], train["label"])
+          Path("models").mkdir(exist_ok=True)
+          joblib.dump(pipe, "models/tfidf_svm_bigrams.pkl")
+          print("CI model trained and saved → models/tfidf_svm_bigrams.pkl")
+          EOF
+
+      - name: Run model tests
+        run: pytest tests/test_model.py -v --tb=short
+        env:
+          PYTHONUTF8: "1"
+
+      - name: Run API tests
+        run: pytest tests/test_api.py -v --tb=short
+        env:
+          PYTHONUTF8: "1"
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: reports/
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Job 2: Train & Evaluate (main branch pushes only, not PRs)
+  # ───────────────────────────────────────────────────────────────────────────
+  train-and-evaluate:
+    name: 🏋️ Train & Evaluate
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install training dependencies
+        run: |
+          pip install --upgrade pip
+          pip install scikit-learn numpy pandas mlflow joblib pyyaml \
+                      matplotlib seaborn evidently datasets
+
+      - name: Start MLflow server
+        run: |
+          mkdir -p mlruns
+          mlflow server \
+            --host 0.0.0.0 \
+            --port 5000 \
+            --backend-store-uri sqlite:///mlruns/mlflow.db \
+            --default-artifact-root ./mlruns/artifacts &
+          sleep 8
+          curl -f http://localhost:5000/health && echo "✅ MLflow is up"
+
+      - name: Ingest & preprocess data
+        run: |
+          python src/ingest.py
+          python src/preprocess.py
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+
+      - name: Train model
+        run: python src/train.py
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+
+      - name: Evaluate model
+        id: evaluate
+        run: |
+          python src/evaluate.py
+          ACCURACY=$(python -c "
+          import json
+          m = json.load(open('reports/final_metrics.json'))
+          print(m.get('accuracy', 0))
+          ")
+          echo "accuracy=${ACCURACY}" >> $GITHUB_OUTPUT
+          echo "Model accuracy: ${ACCURACY}"
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+
+      - name: Check accuracy threshold
+        run: |
+          python - <<EOF
+          threshold = float("${{ github.event.inputs.accuracy_threshold || '0.88' }}")
+          accuracy  = float("${{ steps.evaluate.outputs.accuracy }}")
+          print(f"Accuracy: {accuracy:.4f}  Threshold: {threshold:.4f}")
+          if accuracy < threshold:
+              print(f"❌ Accuracy {accuracy:.4f} below threshold {threshold:.4f}")
+              exit(1)
+          print(f"✅ Accuracy {accuracy:.4f} meets threshold {threshold:.4f}")
+          EOF
+
+      - name: Run drift monitoring
+        # FIX: monitor.py reads paths from params.yaml, not CLI args
+        # We patch params.yaml paths to point to CI data, then run normally
+        run: |
+          python - <<'EOF'
+          import yaml
+          with open("params.yaml") as f:
+              params = yaml.safe_load(f)
+          params["monitoring"]["reference_data"] = "data/processed/train.csv"
+          params["monitoring"]["report_path"]    = "reports/drift_report.html"
+          with open("params.yaml", "w") as f:
+              yaml.dump(params, f)
+          print("params.yaml patched for CI drift monitoring")
+          EOF
+          python -X utf8 monitoring/monitor.py
+        continue-on-error: true   # drift alert is a warning, not a pipeline failure
+        env:
+          PYTHONUTF8: "1"
+
+      - name: Upload ML artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-artifacts
+          path: |
+            reports/
+            models/
+          retention-days: 30
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Job 3: Build & Push Docker Image
+  # Requires GitHub secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN
+  # Set at: repo → Settings → Secrets and variables → Actions
+  # Get token at: hub.docker.com → Account Settings → Security → New Access Token
+  # ───────────────────────────────────────────────────────────────────────────
+  docker-build:
+    name: 🐳 Build & Push Docker Image
+    needs: train-and-evaluate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download ML artifacts from training job
+        uses: actions/download-artifact@v4
+        with:
+          name: ml-artifacts
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=raw,value=latest
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - name: Security scan (Trivy) — report only
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:latest
+          format: table
+          exit-code: "0"
+          severity: HIGH,CRITICAL
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Job 4: Pipeline Summary
+  # ───────────────────────────────────────────────────────────────────────────
+  notify:
+    name: 📢 Pipeline Summary
+    needs: [test, train-and-evaluate, docker-build]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Write job summary
+        run: |
+          echo "## 🤖 MLOps Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🧪 Tests            | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🏋️ Training         | ${{ needs.train-and-evaluate.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🐳 Docker           | ${{ needs.docker-build.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,67 @@
+stages:
+  ingest:
+    cmd: python src/ingest.py
+    deps:
+      - src/ingest.py
+      - params.yaml
+    params:
+      - data.dataset
+      - data.max_samples
+    outs:
+      - data/raw/train_raw.csv
+      - data/raw/test_raw.csv
+
+  preprocess:
+    cmd: python src/preprocess.py
+    deps:
+      - src/preprocess.py
+      - data/raw/train_raw.csv
+      - data/raw/test_raw.csv
+      - params.yaml
+    params:
+      - data.test_size
+      - data.val_size
+      - data.random_state
+    outs:
+      - data/processed/train.csv
+      - data/processed/val.csv
+      - data/processed/test.csv
+
+  train:
+    cmd: python src/train.py
+    deps:
+      - src/train.py
+      - data/processed/train.csv
+      - data/processed/val.csv
+      - params.yaml
+    params:
+      - model
+      - training
+      - mlflow.experiment_name
+    outs:
+      - models/
+
+  evaluate:
+    cmd: python src/evaluate.py
+    deps:
+      - src/evaluate.py
+      - models/
+      - data/processed/test.csv
+      - params.yaml
+    metrics:
+      - reports/final_metrics.json:
+          cache: false
+    plots:
+      - reports/final_confusion_matrix.png:
+          cache: false
+
+  monitor:
+    cmd: python monitoring/monitor.py
+    deps:
+      - monitoring/monitor.py
+      - data/processed/train.csv
+      - data/processed/test.csv
+      - params.yaml
+    outs:
+      - reports/drift_report.html:
+          cache: false
