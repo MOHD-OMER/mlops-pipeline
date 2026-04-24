@@ -1,31 +1,19 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-.env
-
-# Data (too large for GitHub)
-data/raw/
-data/processed/
-
-# Models (too large)
-models/
-
-# MLflow
-mlruns/
-
-# Reports
-reports/
-
-# Conda/pip
-.conda/
-venv/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb
+# Python 
+__pycache__/ 
+*.pyc 
+.env 
+# Data 
+data/raw/ 
+data/processed/ 
+# Models 
+models/ 
+# MLflow 
+mlruns/ 
+# Reports 
+reports/ 
+# Conda 
+.conda/ 
+venv/ 
+# Jupyter 
+.ipynb_checkpoints/ 
+*.ipynb 
