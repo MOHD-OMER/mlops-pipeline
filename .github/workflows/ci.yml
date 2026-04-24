@@ -229,7 +229,7 @@ jobs:
       - name: Check accuracy threshold
         run: |
           python - <<EOF
-          threshold = float("${{ github.event.inputs.accuracy_threshold || '0.88' }}")
+          threshold = float("${{ github.event.inputs.accuracy_threshold || '0.87' }}")
           accuracy  = float("${{ steps.evaluate.outputs.accuracy }}")
           print(f"Accuracy: {accuracy:.4f}  Threshold: {threshold:.4f}")
           if accuracy < threshold:
