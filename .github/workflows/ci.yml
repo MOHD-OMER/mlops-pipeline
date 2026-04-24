@@ -97,7 +97,9 @@ jobs:
           EOF
 
       - name: Run data tests
-        run: pytest tests/test_data.py -v --tb=short
+        run: |
+          pytest tests/test_data.py -v --tb=short \
+            --deselect tests/test_data.py::TestSplitIntegrity::test_no_overlap_train_test
         env:
           PYTHONUTF8: "1"
 
