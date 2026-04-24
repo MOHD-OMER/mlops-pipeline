@@ -162,6 +162,25 @@ jobs:
           pip install scikit-learn numpy pandas mlflow joblib pyyaml \
                       matplotlib seaborn evidently datasets
 
+      - name: Patch params.yaml for CI (fix MLflow URI and monitoring paths)
+        run: |
+          python - <<'EOF'
+          import yaml
+          with open("params.yaml") as f:
+              params = yaml.safe_load(f)
+          # FIX: train.py reads tracking_uri from params.yaml, not env var
+          # In CI there is no Docker network so 'mlflow' hostname doesn't resolve
+          params["mlflow"]["tracking_uri"] = "http://localhost:5000"
+          # Pre-patch monitoring paths too
+          params["monitoring"]["reference_data"] = "data/processed/train.csv"
+          params["monitoring"]["report_path"]    = "reports/drift_report.html"
+          with open("params.yaml", "w") as f:
+              yaml.dump(params, f)
+          print("params.yaml patched for CI:")
+          print("  mlflow.tracking_uri -> http://localhost:5000")
+          print("  monitoring paths    -> data/processed/")
+          EOF
+
       - name: Start MLflow server
         run: |
           mkdir -p mlruns
@@ -186,12 +205,12 @@ jobs:
           python src/ingest.py
           python src/preprocess.py
         env:
-          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_URI: "http://localhost:5000"
 
       - name: Train model
         run: python src/train.py
         env:
-          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_URI: "http://localhost:5000"
 
       - name: Evaluate model
         id: evaluate
@@ -205,7 +224,7 @@ jobs:
           echo "accuracy=${ACCURACY}" >> $GITHUB_OUTPUT
           echo "Model accuracy: ${ACCURACY}"
         env:
-          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_URI: "http://localhost:5000"
 
       - name: Check accuracy threshold
         run: |
@@ -220,20 +239,7 @@ jobs:
           EOF
 
       - name: Run drift monitoring
-        # monitor.py reads from params.yaml not CLI args
-        # Patch params.yaml to point to CI data then run normally
-        run: |
-          python - <<'EOF'
-          import yaml
-          with open("params.yaml") as f:
-              params = yaml.safe_load(f)
-          params["monitoring"]["reference_data"] = "data/processed/train.csv"
-          params["monitoring"]["report_path"]    = "reports/drift_report.html"
-          with open("params.yaml", "w") as f:
-              yaml.dump(params, f)
-          print("params.yaml patched for CI drift monitoring")
-          EOF
-          python -X utf8 monitoring/monitor.py
+        run: python -X utf8 monitoring/monitor.py
         continue-on-error: true
         env:
           PYTHONUTF8: "1"
