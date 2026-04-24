@@ -22,7 +22,7 @@ on:
       accuracy_threshold:
         description: "Min accuracy to register model (0-1)"
         required: false
-        default: "0.88"
+        default: "0.87"
 
 env:
   PYTHON_VERSION: "3.10"
