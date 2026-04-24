@@ -170,8 +170,16 @@ jobs:
             --port 5000 \
             --backend-store-uri sqlite:///mlruns/mlflow.db \
             --default-artifact-root ./mlruns/artifacts &
-          sleep 8
-          curl -f http://localhost:5000/health && echo "MLflow is up"
+          echo "Waiting for MLflow to start..."
+          for i in {1..30}; do
+            if curl -sf http://localhost:5000/health > /dev/null 2>&1; then
+              echo "MLflow is up after ${i} attempts"
+              break
+            fi
+            echo "Attempt ${i}/30 - waiting..."
+            sleep 3
+          done
+          curl -f http://localhost:5000/health && echo "MLflow confirmed healthy"
 
       - name: Ingest & preprocess data
         run: |
