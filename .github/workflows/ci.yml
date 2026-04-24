@@ -1,12 +1,5 @@
 name: MLOps Pipeline CI/CD
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Triggers:
-#   • Push to main branch (src, tests, monitoring, data, config, Docker changes)
-#   • Pull requests to main
-#   • Manual workflow dispatch with optional inputs
-# ─────────────────────────────────────────────────────────────────────────────
-
 on:
   push:
     branches: [main, dev]
@@ -97,6 +90,8 @@ jobs:
           EOF
 
       - name: Run data tests
+        # Skipping overlap test: synthetic CI data has only 4 unique texts
+        # repeated 300x so train/test overlap is expected, not a real bug
         run: |
           pytest tests/test_data.py -v --tb=short \
             --deselect tests/test_data.py::TestSplitIntegrity::test_no_overlap_train_test
@@ -120,7 +115,7 @@ jobs:
           pipe.fit(train["text"], train["label"])
           Path("models").mkdir(exist_ok=True)
           joblib.dump(pipe, "models/tfidf_svm_bigrams.pkl")
-          print("CI model trained and saved → models/tfidf_svm_bigrams.pkl")
+          print("CI model trained and saved -> models/tfidf_svm_bigrams.pkl")
           EOF
 
       - name: Run model tests
@@ -173,7 +168,7 @@ jobs:
             --backend-store-uri sqlite:///mlruns/mlflow.db \
             --default-artifact-root ./mlruns/artifacts &
           sleep 8
-          curl -f http://localhost:5000/health && echo "✅ MLflow is up"
+          curl -f http://localhost:5000/health && echo "MLflow is up"
 
       - name: Ingest & preprocess data
         run: |
@@ -208,14 +203,14 @@ jobs:
           accuracy  = float("${{ steps.evaluate.outputs.accuracy }}")
           print(f"Accuracy: {accuracy:.4f}  Threshold: {threshold:.4f}")
           if accuracy < threshold:
-              print(f"❌ Accuracy {accuracy:.4f} below threshold {threshold:.4f}")
+              print(f"Accuracy {accuracy:.4f} below threshold {threshold:.4f}")
               exit(1)
-          print(f"✅ Accuracy {accuracy:.4f} meets threshold {threshold:.4f}")
+          print(f"Accuracy {accuracy:.4f} meets threshold {threshold:.4f}")
           EOF
 
       - name: Run drift monitoring
-        # FIX: monitor.py reads paths from params.yaml, not CLI args
-        # We patch params.yaml paths to point to CI data, then run normally
+        # monitor.py reads from params.yaml not CLI args
+        # Patch params.yaml to point to CI data then run normally
         run: |
           python - <<'EOF'
           import yaml
@@ -228,7 +223,7 @@ jobs:
           print("params.yaml patched for CI drift monitoring")
           EOF
           python -X utf8 monitoring/monitor.py
-        continue-on-error: true   # drift alert is a warning, not a pipeline failure
+        continue-on-error: true
         env:
           PYTHONUTF8: "1"
 
@@ -244,8 +239,8 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────────
   # Job 3: Build & Push Docker Image
   # Requires GitHub secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN
-  # Set at: repo → Settings → Secrets and variables → Actions
-  # Get token at: hub.docker.com → Account Settings → Security → New Access Token
+  # Set at: repo -> Settings -> Secrets and variables -> Actions
+  # Get token at: hub.docker.com -> Account Settings -> Security -> New Access Token
   # ───────────────────────────────────────────────────────────────────────────
   docker-build:
     name: 🐳 Build & Push Docker Image
@@ -292,7 +287,7 @@ jobs:
           cache-to: type=gha,mode=max
           platforms: linux/amd64
 
-      - name: Security scan (Trivy) — report only
+      - name: Security scan (Trivy) - report only
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.IMAGE_NAME }}:latest
