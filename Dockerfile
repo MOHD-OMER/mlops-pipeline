@@ -44,7 +44,6 @@ ENV PATH=/root/.local/bin:$PATH
 COPY params.yaml      .
 COPY src/             ./src/
 COPY models/          ./models/
-COPY data/processed/  ./data/processed/
 
 # Create dirs that might be needed at runtime
 RUN mkdir -p reports mlruns
