@@ -27,7 +27,7 @@ on:
 env:
   PYTHON_VERSION: "3.10"
   MLFLOW_TRACKING_URI: "http://localhost:5000"
-  IMAGE_NAME: ${{ github.repository_owner }}/mlops-news-classifier
+  IMAGE_NAME: omer022/mlops-news-classifier
 
 jobs:
 
