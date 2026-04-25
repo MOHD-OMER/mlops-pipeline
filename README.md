@@ -5,7 +5,7 @@ Covers every stage from raw data ingestion to monitored model serving, with full
 tracking, CI/CD automation, and data drift detection.
 
 [![CI/CD](https://github.com/MOHD-OMER/mlops-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/MOHD-OMER/mlops-pipeline/actions/workflows/ci.yml)
-[![Docker](https://img.shields.io/docker/v/mohd-omer/mlops-news-classifier?label=DockerHub)](https://hub.docker.com/r/omer022/mlops-news-classifier)
+[![Docker](https://img.shields.io/docker/v/omer022/mlops-news-classifier?label=DockerHub)](https://hub.docker.com/r/omer022/mlops-news-classifier)
 
 ---
 
