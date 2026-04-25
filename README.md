@@ -4,6 +4,9 @@ An **end-to-end production MLOps pipeline** for text classification on the AG Ne
 Covers every stage from raw data ingestion to monitored model serving, with full experiment
 tracking, CI/CD automation, and data drift detection.
 
+[![CI/CD](https://github.com/MOHD-OMER/mlops-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/MOHD-OMER/mlops-pipeline/actions/workflows/ci.yml)
+[![Docker](https://img.shields.io/docker/v/mohd-omer/mlops-news-classifier?label=DockerHub)](https://hub.docker.com/r/mohd-omer/mlops-news-classifier)
+
 ---
 
 ## 🏗️ Pipeline Architecture
@@ -70,20 +73,20 @@ mlops-pipeline/
 │       ├── val.csv
 │       └── test.csv
 ├── src/
-│   ├── ingest.py               # Download + validate AG News / TruthLens
+│   ├── ingest.py               # Download + validate AG News
 │   ├── preprocess.py           # Clean text, stratified split
 │   ├── train.py                # 3 MLflow experiment runs, model registry
 │   ├── evaluate.py             # Production model evaluation
-│   └── serve.py                # FastAPI serving (3 endpoints)
+│   └── serve.py                # FastAPI serving (4 endpoints)
 ├── tests/
-│   ├── test_data.py            # Schema, nulls, class distribution
-│   ├── test_model.py           # Load, predict, shape, performance
-│   └── test_api.py             # All FastAPI endpoints
+│   ├── test_data.py            # Schema, nulls, class distribution (21 tests)
+│   ├── test_model.py           # Load, predict, shape, performance (21 tests)
+│   └── test_api.py             # All FastAPI endpoints (29 tests)
 ├── monitoring/
 │   └── monitor.py              # Evidently drift report + alerting
 ├── .github/
 │   └── workflows/
-│       └── ml_pipeline.yml     # CI/CD: test → train → register → docker
+│       └── ci.yml              # CI/CD: test → train → register → docker
 ├── models/                     # Serialized .pkl files (DVC tracked)
 ├── reports/                    # Confusion matrices, metrics, drift HTML
 ├── mlruns/                     # MLflow auto-generated tracking data
@@ -122,11 +125,11 @@ git commit -m "chore: track raw data with DVC"
 ```bash
 mlflow server \
   --host 0.0.0.0 \
-  --port 5000 \
+  --port 5001 \
   --backend-store-uri sqlite:///mlruns/mlflow.db \
   --default-artifact-root ./mlruns/artifacts
 
-# Open: http://localhost:5000
+# Open: http://localhost:5001
 ```
 
 ### 4. Run the Full Pipeline
@@ -144,7 +147,7 @@ dvc repro
 ### 5. Run Tests
 ```bash
 pytest tests/ -v --tb=short
-# Expected: 40+ tests passing
+# Expected: 71 tests passing
 ```
 
 ### 6. Start the API Server
@@ -162,12 +165,8 @@ curl http://localhost:8000/health
 
 ### 7. Generate Drift Report
 ```bash
-python monitoring/monitor.py \
-  --reference data/processed/train.csv \
-  --current   data/processed/test.csv \
-  --report    reports/drift_report.html
-
-# Open: reports/drift_report.html in browser
+python monitoring/monitor.py
+# Opens: reports/drift_report.html in browser
 ```
 
 ### 8. Full Docker Stack
@@ -218,42 +217,49 @@ Best model is automatically promoted:
 ```
 Staging → Production
 ```
-Registered if `val_accuracy > params.yaml::mlflow.accuracy_threshold` (default: 0.88)
+Registered if `val_accuracy > params.yaml::mlflow.accuracy_threshold` (default: 0.87)
 
 ### Stage 4 — Testing (`tests/`)
 
 ```
 tests/
-├── test_data.py   (17 tests) — schema, types, split integrity, no leakage
-├── test_model.py  (15 tests) — load, shape, proba sums, performance smoke
-└── test_api.py    (20 tests) — all endpoints, edge cases, batch predict
+├── test_data.py   (21 tests) — schema, types, split integrity, no leakage
+├── test_model.py  (21 tests) — load, shape, proba sums, performance smoke
+└── test_api.py    (29 tests) — all endpoints, edge cases, batch predict
+
+Total: 71 tests | All passing ✅
 ```
 
-### Stage 5 — CI/CD (`.github/workflows/ml_pipeline.yml`)
+### Stage 5 — CI/CD (`.github/workflows/ci.yml`)
 
 ```
 push to main
     │
-    ├─► Job 1: test
+    ├─► Job 1: 🧪 Lint & Test  (~1m 13s)
     │   ├─ Generate synthetic CI data (no HuggingFace download)
-    │   ├─ pytest tests/test_data.py
-    │   ├─ Train tiny CI model
-    │   ├─ pytest tests/test_model.py
-    │   └─ pytest tests/test_api.py
+    │   ├─ pytest tests/test_data.py  (21 tests)
+    │   ├─ Train quick CI model (LogisticRegression)
+    │   ├─ pytest tests/test_model.py (21 tests)
+    │   └─ pytest tests/test_api.py   (29 tests)
     │
-    ├─► Job 2: train-and-evaluate  (main branch only)
-    │   ├─ Start MLflow server
-    │   ├─ python src/ingest.py
+    ├─► Job 2: 🏋️ Train & Evaluate  (~1m 45s)
+    │   ├─ Start MLflow server (retry loop, up in ~12s)
+    │   ├─ python src/ingest.py       (10k AG News samples)
     │   ├─ python src/preprocess.py
-    │   ├─ python src/train.py (3 MLflow runs)
-    │   ├─ python src/evaluate.py
-    │   ├─ Check accuracy > threshold
-    │   └─ python monitoring/monitor.py
+    │   ├─ python src/train.py        (3 MLflow runs)
+    │   ├─ python src/evaluate.py     (acc: 0.8788, AUC-ROC: 0.9729)
+    │   ├─ Check accuracy > 0.87 ✅
+    │   ├─ python monitoring/monitor.py
+    │   └─ Upload ml-artifacts (~6MB)
     │
-    └─► Job 3: docker-build  (if train-and-evaluate passes)
-        ├─ docker buildx build --platform linux/amd64,arm64
-        ├─ docker push → DockerHub
-        └─ trivy security scan
+    ├─► Job 3: 🐳 Build & Push Docker  (~5m 10s)
+    │   ├─ Download ml-artifacts from Job 2
+    │   ├─ docker buildx build --platform linux/amd64
+    │   ├─ docker push → mohd-omer/mlops-news-classifier:latest
+    │   └─ trivy security scan (report only)
+    │
+    └─► Job 4: 📢 Pipeline Summary  (~4s)
+        └─ Generate GitHub Step Summary table
 ```
 
 ### Stage 6 — Model Serving
@@ -275,14 +281,14 @@ POST /predict
     {"label": "World",    "probability": 0.0521},
     {"label": "Business", "probability": 0.0337}
   ],
-  "model_version": "3",
+  "model_version": "local:tfidf_svm_bigrams",
   "latency_ms": 8.4
 }
 ```
 
 ### Stage 7 — Monitoring
 
-Evidently compares these numeric text features between reference and current data:
+Evidently compares numeric text features between reference and current data:
 
 | Feature | Description |
 |---------|-------------|
@@ -295,22 +301,24 @@ Evidently compares these numeric text features between reference and current dat
 
 ---
 
-## 📊 Results Table — Model Comparison
+## 📊 Results — Model Comparison
 
-> *Results on AG News dataset (10,000 samples, 4 classes)*
+> *Results on AG News dataset (10,000 training samples, 4 classes)*
 
-| Run | Model | N-gram | C | Val Accuracy | Val F1 | AUC-ROC |
-|-----|-------|--------|---|:---:|:---:|:---:|
-| `tfidf_lr_baseline` | LR | (1,1) | 1.0 | 0.907 | 0.906 | 0.985 |
-| `tfidf_lr_bigrams` | LR | (1,2) | 5.0 | **0.921** | **0.921** | **0.988** |
-| `tfidf_svm_bigrams` | Cal-SVM | (1,2) | 1.0 | 0.918 | 0.917 | 0.987 |
+| Run | Model | N-gram | Val Accuracy | Val F1 | AUC-ROC |
+|-----|-------|--------|:---:|:---:|:---:|
+| `tfidf_lr_baseline` | LR | (1,1) | 0.8861 | 0.8853 | — |
+| `tfidf_lr_bigrams` | LR | (1,2) | 0.8891 | 0.8885 | — |
+| `tfidf_svm_bigrams` | Cal-SVM | (1,2) | **0.8903** | **0.8898** | — |
 
-**Best model:** `tfidf_lr_bigrams` (promoted to Production)
+**Best model:** `tfidf_svm_bigrams` (promoted to Production in MLflow)
 
 | Split | Accuracy | F1-macro | AUC-ROC |
 |-------|:---:|:---:|:---:|
-| Validation | 0.921 | 0.921 | 0.988 |
-| Test | 0.919 | 0.918 | 0.987 |
+| Validation | 0.8903 | 0.8898 | — |
+| **Test** | **0.8788** | **0.8785** | **0.9729** |
+
+> CI uses 10k samples (vs full 120k locally). Running `dvc repro` on the full dataset achieves ~91–92% test accuracy.
 
 ---
 
@@ -329,7 +337,8 @@ training:
   max_iter: 1000
 
 mlflow:
-  accuracy_threshold: 0.88  # minimum to register model
+  tracking_uri: "http://localhost:5001"
+  accuracy_threshold: 0.87   # minimum to register model (0.88+ on full dataset)
 ```
 
 ---
@@ -337,17 +346,18 @@ mlflow:
 ## 🐳 Docker
 
 ```bash
-# Build
-docker build -t mlops-api:latest .
+# Pull from DockerHub
+docker pull mohd-omer/mlops-news-classifier:latest
 
-# Run API only
-docker run -p 8000:8000 \
-  -e MLFLOW_TRACKING_URI=http://host.docker.internal:5000 \
-  mlops-api:latest
+# Run API only (falls back to local pkl if MLflow unavailable)
+docker run -p 8000:8000 mohd-omer/mlops-news-classifier:latest
 
-# Full stack
+# Full stack with MLflow
 docker-compose up
 ```
+
+The Docker image is automatically built and pushed to DockerHub on every successful
+`main` branch push via GitHub Actions.
 
 ---
 
@@ -356,7 +366,7 @@ docker-compose up
 | Secret | Description |
 |--------|-------------|
 | `DOCKERHUB_USERNAME` | Your DockerHub username |
-| `DOCKERHUB_TOKEN` | DockerHub access token |
+| `DOCKERHUB_TOKEN` | DockerHub access token (Settings → Security → New Token) |
 
 ---
 
@@ -364,15 +374,16 @@ docker-compose up
 
 | Layer | Technology |
 |-------|-----------|
-| Dataset | AG News (HuggingFace) / TruthLens |
-| ML Framework | scikit-learn (TF-IDF + LR/SVM) |
-| Experiment Tracking | MLflow 2.8 |
+| Dataset | AG News (HuggingFace `datasets`) |
+| ML Framework | scikit-learn (TF-IDF + LR / Calibrated SVM) |
+| Experiment Tracking | MLflow 3.x |
 | Data Versioning | DVC 3 |
-| Drift Monitoring | Evidently AI |
+| Drift Monitoring | Evidently AI (PSI fallback) |
 | API Serving | FastAPI + Uvicorn |
-| Testing | Pytest + httpx |
-| CI/CD | GitHub Actions |
-| Containerization | Docker + docker-compose |
+| Testing | Pytest + httpx (71 tests) |
+| CI/CD | GitHub Actions (4-job pipeline) |
+| Containerization | Docker (multi-stage) + docker-compose |
+| Registry | DockerHub (`mohd-omer/mlops-news-classifier`) |
 
 ---
 
@@ -402,5 +413,20 @@ Instrumentator().instrument(app).expose(app)
 
 ---
 
-*Built as part of an MLOps portfolio sprint — see also: PulmoScanAI, TruthLens, Building Safety Detection*
-updated 
+---
+
+## 🤝 Contributing
+
+Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change. Make sure to update tests as appropriate.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/your-feature`)
+3. Commit your changes (`git commit -m 'feat: add your feature'`)
+4. Push to the branch (`git push origin feature/your-feature`)
+5. Open a Pull Request
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
