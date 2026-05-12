@@ -4,8 +4,9 @@
 
 # MLOps Pipeline — News Classification
 
-**A production-grade, end-to-end MLOps system for multi-class text classification.**  
-Built to industry standards: reproducible experiments, automated CI/CD, containerized serving, and live drift monitoring — all in one cohesive pipeline.
+**A production-grade, end-to-end MLOps system for multi-class text classification.**
+
+Reproducible experiments · Automated CI/CD · Containerized serving · Live drift monitoring
 
 <br/>
 
@@ -19,7 +20,7 @@ Built to industry standards: reproducible experiments, automated CI/CD, containe
 
 <br/>
 
-**[What is this?](#-overview) · [How it works](#-how-it-works) · [Quick Start](#-quick-start) · [API Reference](#-api-reference) · [Results](#-results) · [Extend it](#-extending-the-pipeline)**
+[Overview](#-overview) · [Architecture](#-architecture) · [Pipeline Stages](#-pipeline-stages) · [Quick Start](#-quick-start) · [API Reference](#-api-reference) · [Results](#-results) · [Configuration](#-configuration) · [Extending](#-extending-the-pipeline)
 
 <br/>
 
@@ -27,90 +28,123 @@ Built to industry standards: reproducible experiments, automated CI/CD, containe
 
 ---
 
-## 🧭 Overview
+## Overview
 
-This project is a **complete MLOps reference implementation** — not just a model, but an entire system for taking a machine learning idea from raw data all the way to a monitored, production-serving API.
+This project is a **complete MLOps reference implementation** — a system for taking a machine learning idea from raw data all the way to a monitored, production-serving API.
 
-It classifies news articles into four categories (`World`, `Sports`, `Business`, `Sci/Tech`) using the [AG News](https://huggingface.co/datasets/ag_news) dataset. But the classification task is almost secondary — the real purpose of this project is to demonstrate **every layer of modern ML engineering** working together:
+It classifies news articles into four categories (`World`, `Sports`, `Business`, `Sci/Tech`) using the [AG News](https://huggingface.co/datasets/ag_news) dataset. The classification task is intentionally simple; the focus is demonstrating every layer of modern ML engineering working together in one cohesive system.
 
-| What you get | Why it matters |
+| Capability | Details |
 |---|---|
-| **Reproducible experiments** via DVC + MLflow | Anyone can re-run the pipeline and get the same results |
-| **Automated model selection** | Best-performing model is auto-promoted to Production |
-| **71 automated tests** across data, model, and API | Catches regressions before they reach production |
+| **Reproducible experiments** | DVC + MLflow: anyone can re-run the pipeline and get identical results |
+| **Automated model selection** | Best-performing model is auto-promoted to Production via an accuracy gate |
+| **71 automated tests** | Covers data integrity, model behaviour, and API correctness |
 | **4-job GitHub Actions CI/CD** | Every push to `main` triggers a full train → test → Docker push cycle |
-| **FastAPI serving** with batch inference | Drop-in REST API with confidence scores, latency tracking, and model metadata |
-| **Evidently AI drift monitoring** | Detects when the distribution of incoming text shifts away from training data |
+| **FastAPI serving** | REST API with confidence scores, batch inference, and model metadata |
+| **Evidently AI drift monitoring** | Detects distribution shift in incoming text against training reference data |
 
-> **Who is this for?** ML engineers who want to understand how production ML systems are structured, teams adopting MLOps practices for the first time, or anyone evaluating what a complete ML pipeline looks like beyond a Jupyter notebook.
+> **Who is this for?** ML engineers learning how production systems are structured, teams adopting MLOps practices, or anyone evaluating what a complete ML pipeline looks like beyond a notebook.
 
 ---
 
-## ⚙️ How It Works
-
-The pipeline is composed of **seven sequential stages**, each with a clearly defined responsibility:
+## Architecture
 
 ```
-Raw Data ──► Validated Data ──► Cleaned Splits ──► Trained Models ──► Best Model
-                                                                           │
-                                                              ┌────────────┘
-                                                              ▼
-                                                     FastAPI REST API
-                                                              │
-                                                     Drift Monitoring
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        MLOps Pipeline Architecture                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────┐    ┌──────────────────┐    ┌───────────────────────────────┐
+  │  DATA LAYER  │    │  EXPERIMENT       │    │   CI/CD  (GitHub Actions)     │
+  │              │    │  TRACKING         │    │                               │
+  │ HuggingFace  │    │                   │    │  push to main                 │
+  │ AG News ─────┼───►│  MLflow :5001     │    │       │                       │
+  │ dataset      │    │                   │    │       ▼                       │
+  │              │    │  Experiments      │    │  lint & test (71 tests)       │
+  │ data/        │    │  ├─ run 1         │    │       │                       │
+  │ ├─ raw/      │    │  ├─ run 2         │    │       ▼                       │
+  │ └─ processed/│    │  └─ run 3         │    │  train & evaluate             │
+  └──────┬───────┘    │                   │    │  (acc > 0.87 gate)            │
+         │            │  Model Registry   │    │       │                       │
+         ▼            │  ├─ Staging       │    │       ▼                       │
+  ┌──────────────┐    │  └─ Production ───┼───►│  build & push Docker image    │
+  │  DVC         │    └──────────────────┘    └───────────────────────────────┘
+  │  VERSIONING  │
+  │  dvc repro   │
+  └──────────────┘
+
+                    ┌─────────────────────────────────────────┐
+                    │       MODEL SERVING  (FastAPI :8000)     │
+                    │                                          │
+                    │  POST /predict       label + confidence  │
+                    │  POST /predict/batch bulk inference      │
+                    │  GET  /model/info    version + metrics   │
+                    │  GET  /health        liveness probe      │
+                    └──────────────────┬───────────────────────┘
+                                       │
+                                       ▼
+                    ┌─────────────────────────────────────────┐
+                    │       MONITORING  (Evidently AI)         │
+                    │                                          │
+                    │  Compare training dist vs incoming data  │
+                    │  PSI per feature → HTML drift report     │
+                    │  Alert if PSI exceeds threshold          │
+                    └─────────────────────────────────────────┘
 ```
 
-### Stage 1 — Data Ingestion & Validation
+---
 
-`src/ingest.py` downloads AG News from HuggingFace and runs automated data quality checks before a single line of training code runs:
+## Pipeline Stages
 
-- **Schema validation** — asserts `text`, `label`, and `label_name` columns are present
-- **Null ratio check** — fails hard if nulls exceed 2% of the dataset
-- **Class imbalance warning** — raises a flag if majority/minority class ratio > 5×
-- **Duplicate detection** — reports exact-duplicate text entries
+The pipeline consists of eight sequential stages, each with a clearly defined responsibility.
 
-This guards against silent data corruption — a common source of unexplained model degradation.
+### 1 — Data Ingestion & Validation
 
-### Stage 2 — Preprocessing
+`src/ingest.py` downloads AG News from HuggingFace and runs automated data quality checks before any training code executes.
 
-`src/preprocess.py` cleans text and produces a **stratified train/val/test split** (70% / 15% / 15%), ensuring class distribution is preserved across all three sets. Outputs are DVC-tracked `.csv` files, so splits are versioned alongside the code.
+| Check | Failure condition |
+|---|---|
+| Schema validation | `text`, `label`, or `label_name` columns missing |
+| Null ratio | Nulls exceed 2% of dataset |
+| Class imbalance | Majority/minority class ratio > 5× |
+| Duplicate detection | Exact-duplicate text entries reported |
 
-### Stage 3 — Experiment Tracking
+### 2 — Preprocessing
 
-`src/train.py` runs **three MLflow experiments** in a single pipeline execution, comparing different TF-IDF feature extraction configurations and classifiers:
+`src/preprocess.py` cleans text and produces a **stratified 70/15/15 train/val/test split**, preserving class distribution across all three sets. Outputs are DVC-tracked `.csv` files so splits are versioned alongside code.
 
-| Run | Model | Vectorizer | N-gram Range | Reg. Strength (C) |
-|---|---|---|:---:|:---:|
-| `tfidf_lr_baseline` | Logistic Regression | TF-IDF | (1,1) unigrams | 1.0 |
-| `tfidf_lr_bigrams` | Logistic Regression | TF-IDF | (1,2) bigrams | 5.0 |
-| `tfidf_svm_bigrams` | Calibrated SVM | TF-IDF | (1,2) bigrams | 1.0 |
+### 3 — Experiment Tracking
 
-**Every run logs to MLflow:**
-- All hyperparameters from `params.yaml`
-- Metrics: accuracy, F1-macro, precision, recall, AUC-ROC
-- Artifacts: serialized model `.pkl`, confusion matrix PNG, classification report
-- Model signature and an input example (for MLflow Model Registry compatibility)
+`src/train.py` runs **three MLflow experiments** in a single execution, comparing TF-IDF configurations and classifiers.
 
-### Stage 4 — Automatic Model Promotion
+| Run | Model | N-gram Range | C |
+|---|---|:---:|:---:|
+| `tfidf_lr_baseline` | Logistic Regression | (1,1) | 1.0 |
+| `tfidf_lr_bigrams` | Logistic Regression | (1,2) | 5.0 |
+| `tfidf_svm_bigrams` | Calibrated SVM | (1,2) | 1.0 |
 
-The best model by validation accuracy is automatically registered in the **MLflow Model Registry** and promoted from `Staging → Production`, but only if it clears the accuracy threshold defined in `params.yaml` (default: 0.87). This is the gate that prevents a degraded model from ever reaching the API.
+Each run logs hyperparameters, metrics (accuracy, F1-macro, precision, recall, AUC-ROC), serialised model `.pkl`, confusion matrix, and classification report to MLflow.
 
-### Stage 5 — Testing
+### 4 — Automatic Model Promotion
 
-Three test suites covering the full system, run on every CI push:
+The best model by validation accuracy is registered in the **MLflow Model Registry** and promoted `Staging → Production`, provided it clears the accuracy threshold in `params.yaml` (default: `0.87`). This gate prevents a degraded model from ever reaching the serving layer.
+
+### 5 — Testing
+
+Three test suites run on every CI push.
 
 ```
 tests/
-├── test_data.py   (21 tests) — schema, types, split integrity, no leakage between sets
-├── test_model.py  (21 tests) — load/predict/shape, probability sums to 1, performance smoke
-└── test_api.py    (29 tests) — all endpoints, edge cases, malformed input, batch inference
+├── test_data.py   — 21 tests: schema, types, split integrity, no data leakage
+├── test_model.py  — 21 tests: load/predict/shape, probability sums to 1, smoke perf
+└── test_api.py    — 29 tests: all endpoints, edge cases, malformed input, batch inference
 
 Total: 71 tests | All passing ✅
 ```
 
-### Stage 6 — CI/CD (GitHub Actions)
+### 6 — CI/CD (GitHub Actions)
 
-Every push to `main` triggers a 4-job pipeline:
+Every push to `main` triggers a four-job pipeline.
 
 ```
 push to main
@@ -119,81 +153,30 @@ push to main
     │         Generates synthetic CI data → runs all 71 tests
     │
     ├─► Job 2: Train & Evaluate       (~1m 45s)
-    │         Full ingest → preprocess → 3 MLflow runs → evaluate
+    │         Ingest → preprocess → 3 MLflow runs → evaluate
     │         Accuracy gate: must exceed 0.87 to proceed
     │         Drift report generated → artifacts uploaded
     │
     ├─► Job 3: Build & Push Docker    (~5m 10s)
     │         Multi-stage build for linux/amd64
-    │         Pushed to DockerHub: mohd-omer/mlops-news-classifier:latest
-    │         Trivy security vulnerability scan
+    │         Pushed to DockerHub as :latest
+    │         Trivy security scan
     │
     └─► Job 4: Pipeline Summary       (~4s)
-              GitHub Step Summary table with all metrics
+              GitHub Step Summary table with all run metrics
 ```
 
-### Stage 7 — Model Serving
+### 7 — Model Serving
 
-`src/serve.py` exposes a FastAPI application with four endpoints. The API loads the Production model from MLflow at startup (with a local `.pkl` fallback if MLflow is unavailable), making it resilient to tracking server outages.
+`src/serve.py` exposes a FastAPI application with four endpoints. The API loads the Production model from MLflow at startup, with a local `.pkl` fallback if the tracking server is unavailable — ensuring resilience to infrastructure outages.
 
-### Stage 8 — Drift Monitoring
+### 8 — Drift Monitoring
 
-`monitoring/monitor.py` uses Evidently AI to compare the feature distribution of the **training reference dataset** against new incoming data. It computes Population Stability Index (PSI) across six text-derived features and raises an alert if any feature's PSI exceeds the threshold. An HTML report is written to `reports/drift_report.html`.
+`monitoring/monitor.py` uses Evidently AI to compare the feature distribution of the training reference dataset against incoming data. It computes Population Stability Index (PSI) across six text-derived features and raises an alert if any PSI exceeds the configured threshold. An HTML report is written to `reports/drift_report.html`.
 
 ---
 
-## 🏗️ Architecture Diagram
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                          MLOps Pipeline Architecture                            │
-└─────────────────────────────────────────────────────────────────────────────────┘
-
-  ┌──────────────┐    ┌───────────────┐    ┌─────────────────────────────────────┐
-  │  DATA LAYER  │    │  EXPERIMENT   │    │          CI/CD  (GitHub Actions)    │
-  │              │    │  TRACKING     │    │                                     │
-  │ HuggingFace  │    │               │    │  push to main ──► run tests         │
-  │ AG News      │───►│  MLflow       │    │                    │                │
-  │ dataset      │    │  Tracking     │    │                    ▼                │
-  │              │    │  Server       │    │                 train model          │
-  │ data/        │    │  :5001        │    │                    │                │
-  │ ├─ raw/      │    │               │    │                    ▼                │
-  │ └─ processed/│    │  Experiments  │    │              evaluate (test acc)     │
-  └──────┬───────┘    │  ├─ run 1    │    │                    │                │
-         │            │  ├─ run 2    │    │              acc > threshold?        │
-         ▼            │  └─ run 3    │    │                    │                │
-  ┌──────────────┐    │              │    │              register to MLflow      │
-  │  DVC         │    │  Model       │    │                    │                │
-  │  VERSION     │    │  Registry    │    │              build Docker image      │
-  │  CONTROL     │    │  ├─ Staging  │    │                    │                │
-  │              │    │  └─Production│    │              push to DockerHub       │
-  │  dvc repro   │    └──────┬───────┘    └─────────────────────────────────────┘
-  └──────────────┘           │
-                             │ best model
-                             ▼
-  ┌──────────────────────────────────────────────────────┐
-  │              MODEL SERVING  (FastAPI :8000)          │
-  │                                                      │
-  │   POST /predict      ──► label + confidence score   │
-  │   GET  /model/info   ──► version + metrics          │
-  │   GET  /health       ──► health status              │
-  │   POST /predict/batch──► bulk inference             │
-  └──────────────────────────────────────────────────────┘
-                             │
-                             ▼
-  ┌──────────────────────────────────────────────────────┐
-  │          MONITORING  (Evidently AI)                  │
-  │                                                      │
-  │   monitor.py                                         │
-  │   ├─ Compare training dist vs new data               │
-  │   ├─ Generate HTML drift report                      │
-  │   └─ Alert if PSI > threshold                        │
-  └──────────────────────────────────────────────────────┘
-```
-
----
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 mlops-pipeline/
@@ -202,38 +185,38 @@ mlops-pipeline/
 │   │   ├── train_raw.csv
 │   │   └── test_raw.csv
 │   └── processed/              # Cleaned, stratified splits (DVC tracked)
-│       ├── train.csv           # 70% of data
-│       ├── val.csv             # 15% of data
-│       └── test.csv            # 15% of data — held out until final eval
+│       ├── train.csv           # 70%
+│       ├── val.csv             # 15%
+│       └── test.csv            # 15% — held out until final evaluation
 ├── src/
 │   ├── ingest.py               # HuggingFace download + schema/quality validation
-│   ├── preprocess.py           # Text cleaning + stratified 70/15/15 split
+│   ├── preprocess.py           # Text cleaning + stratified split
 │   ├── train.py                # 3 MLflow experiment runs + model registry promotion
 │   ├── evaluate.py             # Final test set evaluation of Production model
-│   └── serve.py                # FastAPI app — 4 REST endpoints
+│   └── serve.py                # FastAPI — 4 REST endpoints
 ├── tests/
-│   ├── test_data.py            # 21 tests: schema, nulls, class distribution, no leakage
-│   ├── test_model.py           # 21 tests: load, predict, shape, proba sums, performance
-│   └── test_api.py             # 29 tests: all endpoints, edge cases, batch predict
+│   ├── test_data.py            # 21 tests
+│   ├── test_model.py           # 21 tests
+│   └── test_api.py             # 29 tests
 ├── monitoring/
 │   └── monitor.py              # Evidently drift report + PSI alerting
 ├── .github/
 │   └── workflows/
-│       └── ci.yml              # 4-job CI/CD: test → train → register → docker push
-├── models/                     # Serialized .pkl files (DVC tracked)
-├── reports/                    # Confusion matrices, metrics JSON, drift HTML reports
-├── mlruns/                     # MLflow auto-generated experiment tracking data
-├── docker-compose.yml          # Orchestrates MLflow server + FastAPI + training + monitor
-├── Dockerfile                  # Multi-stage production image (~slim final layer)
+│       └── ci.yml              # 4-job CI/CD pipeline
+├── models/                     # Serialised .pkl files (DVC tracked)
+├── reports/                    # Confusion matrices, metrics JSON, drift HTML
+├── mlruns/                     # MLflow experiment tracking data
+├── docker-compose.yml          # Orchestrates MLflow + FastAPI + training + monitor
+├── Dockerfile                  # Multi-stage production image
 ├── dvc.yaml                    # DVC pipeline stage definitions
 ├── params.yaml                 # Single source of truth for all hyperparameters
-├── pytest.ini                  # Pytest configuration
+├── pytest.ini
 └── requirements.txt
 ```
 
 ---
 
-## ⚡ Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -241,7 +224,7 @@ mlops-pipeline/
 Python 3.10+   git   docker   docker-compose
 ```
 
-### 1. Clone & Install
+### 1. Clone & install
 
 ```bash
 git clone https://github.com/MOHD-OMER/mlops-pipeline.git
@@ -249,7 +232,7 @@ cd mlops-pipeline
 pip install -r requirements.txt
 ```
 
-### 2. Initialize DVC
+### 2. Initialise DVC
 
 ```bash
 dvc init
@@ -258,7 +241,7 @@ git add data/raw.dvc .gitignore
 git commit -m "chore: track raw data with DVC"
 ```
 
-### 3. Start MLflow Tracking Server
+### 3. Start MLflow tracking server
 
 ```bash
 mlflow server \
@@ -268,36 +251,33 @@ mlflow server \
   --default-artifact-root ./mlruns/artifacts
 ```
 
-Open the MLflow UI at [http://localhost:5001](http://localhost:5001) to browse experiments, compare runs, and inspect the model registry.
+MLflow UI available at [http://localhost:5001](http://localhost:5001).
 
-### 4. Run the Full Pipeline
+### 4. Run the full pipeline
 
 ```bash
-# Option A — Run each stage manually (useful for debugging individual steps)
-python src/ingest.py        # Downloads AG News, runs data quality checks
-python src/preprocess.py    # Cleans text, creates stratified splits
-python src/train.py         # Runs 3 MLflow experiments, promotes best model
-python src/evaluate.py      # Evaluates Production model on held-out test set
+# Option A — run stages manually (useful for debugging individual steps)
+python src/ingest.py
+python src/preprocess.py
+python src/train.py
+python src/evaluate.py
 
-# Option B — DVC pipeline (fully reproducible, skips unchanged stages)
+# Option B — DVC (fully reproducible; skips unchanged stages)
 dvc repro
 ```
 
-### 5. Run the Test Suite
+### 5. Run the test suite
 
 ```bash
 pytest tests/ -v --tb=short
-
-# Expected output: 71 passed in ~12s
+# Expected: 71 passed in ~12s
 ```
 
-### 6. Launch the API Server
+### 6. Launch the API server
 
 ```bash
 uvicorn src.serve:app --host 0.0.0.0 --port 8000 --reload
 ```
-
-Test a prediction:
 
 ```bash
 curl -X POST http://localhost:8000/predict \
@@ -305,17 +285,17 @@ curl -X POST http://localhost:8000/predict \
   -d '{"text": "Apple stock rose 5% after strong quarterly earnings.", "top_k": 3}'
 ```
 
-### 7. Generate Drift Report
+### 7. Generate drift report
 
 ```bash
 python monitoring/monitor.py
-# Writes: reports/drift_report.html
+# Output: reports/drift_report.html
 ```
 
-### 8. Full Docker Stack
+### 8. Full Docker stack
 
 ```bash
-# MLflow tracking server + FastAPI serving
+# MLflow + FastAPI
 docker-compose up mlflow api
 
 # Training job (runs once, then exits)
@@ -327,17 +307,15 @@ docker-compose --profile monitor up monitor
 
 ---
 
-## 📡 API Reference
+## API Reference
 
-The FastAPI server runs on port `8000` and exposes four endpoints. Interactive docs are auto-generated at [http://localhost:8000/docs](http://localhost:8000/docs).
+Interactive docs auto-generated at [http://localhost:8000/docs](http://localhost:8000/docs).
 
 ---
 
-### `POST /predict` — Single Prediction
+### `POST /predict` — Single prediction
 
-Classifies a single text input and returns the top predicted label with confidence score.
-
-**Request body:**
+**Request**
 
 ```json
 {
@@ -348,10 +326,10 @@ Classifies a single text input and returns the top predicted label with confiden
 
 | Field | Type | Required | Description |
 |---|---|:---:|---|
-| `text` | string | ✅ | The news article text to classify |
+| `text` | string | ✅ | Article text to classify |
 | `top_k` | integer | ❌ | Number of top predictions to return (default: 1) |
 
-**Response:**
+**Response**
 
 ```json
 {
@@ -370,11 +348,11 @@ Classifies a single text input and returns the top predicted label with confiden
 
 ---
 
-### `POST /predict/batch` — Batch Prediction
+### `POST /predict/batch` — Batch prediction
 
-Classifies multiple texts in a single request — more efficient than repeated single calls for bulk inference.
+More efficient than repeated single calls for bulk inference.
 
-**Request body:**
+**Request**
 
 ```json
 {
@@ -385,7 +363,7 @@ Classifies multiple texts in a single request — more efficient than repeated s
 }
 ```
 
-**Response:**
+**Response**
 
 ```json
 {
@@ -400,9 +378,9 @@ Classifies multiple texts in a single request — more efficient than repeated s
 
 ---
 
-### `GET /model/info` — Model Metadata
+### `GET /model/info` — Model metadata
 
-Returns information about the currently loaded model, including its version, training metrics, and which MLflow run produced it.
+Returns the loaded model's version, training metrics, and originating MLflow run.
 
 ```bash
 curl http://localhost:8000/model/info
@@ -421,9 +399,9 @@ curl http://localhost:8000/model/info
 
 ---
 
-### `GET /health` — Health Check
+### `GET /health` — Health check
 
-Lightweight liveness probe. Returns `200 OK` when the model is loaded and the API is ready to serve.
+Liveness probe. Returns `200 OK` when the model is loaded and the API is ready.
 
 ```bash
 curl http://localhost:8000/health
@@ -432,43 +410,45 @@ curl http://localhost:8000/health
 
 ---
 
-## 📊 Results
+## Results
 
-> Trained on 10,000 samples (CI/CD environment). Running `dvc repro` on the full 120k dataset achieves ~91–92% test accuracy.
+> Trained on 10,000 samples in CI. Running `dvc repro` on the full 120k dataset achieves ~91–92% test accuracy.
 
-### Experiment Comparison
+### Experiment comparison
 
-| Run | Model | N-gram | Val Accuracy | Val F1-macro | Notes |
-|---|---|:---:|:---:|:---:|---|
-| `tfidf_lr_baseline` | Logistic Regression | (1,1) | 0.8861 | 0.8853 | Unigrams only |
-| `tfidf_lr_bigrams` | Logistic Regression | (1,2) | 0.8891 | 0.8885 | Bigrams help slightly |
-| `tfidf_svm_bigrams` | **Calibrated SVM** | **(1,2)** | **0.8903** | **0.8898** | ✅ Auto-promoted to Production |
+| Run | Model | N-gram | Val Accuracy | Val F1 |
+|---|---|:---:|:---:|:---:|
+| `tfidf_lr_baseline` | Logistic Regression | (1,1) | 0.8861 | 0.8853 |
+| `tfidf_lr_bigrams` | Logistic Regression | (1,2) | 0.8891 | 0.8885 |
+| `tfidf_svm_bigrams` | **Calibrated SVM** | **(1,2)** | **0.8903** | **0.8898** |
 
-### Production Model — Final Evaluation
+### Production model — final evaluation
 
 | Split | Accuracy | F1-macro | AUC-ROC |
 |---|:---:|:---:|:---:|
 | Validation | 0.8903 | 0.8898 | — |
 | **Test (held-out)** | **0.8788** | **0.8785** | **0.9729** |
 
-The ~1% gap between validation and test accuracy is expected and healthy — it confirms no overfitting to the validation set during model selection.
+The ~1% gap between validation and test accuracy is expected — it confirms no overfitting to the validation set during model selection.
 
-### Monitored Text Features (Evidently AI)
+### Monitored features (Evidently AI)
 
-| Feature | Description | Drift Metric |
-|---|---|---|
-| `text_length` | Character count per article | PSI |
-| `word_count` | Token count per article | PSI |
-| `avg_word_length` | Average characters per word | PSI |
-| `num_sentences` | Sentence boundary count | PSI |
-| `uppercase_ratio` | Fraction of uppercase characters | PSI |
-| `digit_ratio` | Fraction of digit characters | PSI |
+| Feature | Description |
+|---|---|
+| `text_length` | Character count per article |
+| `word_count` | Token count per article |
+| `avg_word_length` | Average characters per word |
+| `num_sentences` | Sentence boundary count |
+| `uppercase_ratio` | Fraction of uppercase characters |
+| `digit_ratio` | Fraction of digit characters |
+
+All features are evaluated using Population Stability Index (PSI).
 
 ---
 
-## 🔧 Configuration
+## Configuration
 
-All hyperparameters and thresholds live in `params.yaml` — a single source of truth. Change any value and run `dvc repro` to re-execute only the affected pipeline stages.
+All hyperparameters and thresholds live in `params.yaml`. Change any value and run `dvc repro` to re-execute only the affected stages.
 
 ```yaml
 data:
@@ -476,7 +456,7 @@ data:
   max_samples: 10000      # set to null for full 120k dataset
 
 training:
-  C: 1.0                  # regularization strength
+  C: 1.0
   max_iter: 1000
 
 mlflow:
@@ -486,86 +466,77 @@ mlflow:
 
 ---
 
-## 🐳 Docker
+## Docker
 
-The production image is built in two stages: a `builder` layer installs dependencies, and a slim `runtime` layer contains only what's needed to serve — keeping the final image lean.
+The production image uses a multi-stage build: a `builder` layer installs dependencies, and a slim `runtime` layer contains only what's needed to serve.
 
 ```bash
-# Pull the latest image from DockerHub
+# Pull latest image
 docker pull mohd-omer/mlops-news-classifier:latest
 
 # Run the API (falls back to local .pkl if MLflow is unavailable)
 docker run -p 8000:8000 mohd-omer/mlops-news-classifier:latest
 
-# Full stack: MLflow tracking server + API server
+# Full stack
 docker-compose up
 ```
 
-A fresh Docker image is automatically built and pushed to DockerHub on every successful `main` branch push.
+A fresh image is built and pushed to DockerHub on every successful push to `main`.
 
----
-
-## 🔒 Required GitHub Secrets
-
-To enable the CI/CD Docker push, add these secrets to your repository (`Settings → Secrets → Actions`):
+### Required GitHub secrets
 
 | Secret | Description |
 |---|---|
-| `DOCKERHUB_USERNAME` | Your DockerHub username |
+| `DOCKERHUB_USERNAME` | DockerHub username |
 | `DOCKERHUB_TOKEN` | DockerHub access token (`Account Settings → Security → New Access Token`) |
 
 ---
 
-## 📦 Tech Stack
+## Tech Stack
 
 | Layer | Technology | Role |
 |---|---|---|
 | Dataset | AG News via HuggingFace `datasets` | 4-class news classification benchmark |
-| ML Framework | scikit-learn — TF-IDF + LR / Calibrated SVM | Feature extraction + classification |
-| Experiment Tracking | MLflow 3.x | Run logging, artifact storage, model registry |
-| Data Versioning | DVC 3 | Reproducible pipeline stages, data version control |
-| Drift Monitoring | Evidently AI (PSI fallback) | Distribution shift detection |
-| API Serving | FastAPI + Uvicorn | REST inference API with auto-generated docs |
+| ML | scikit-learn — TF-IDF + LR / Calibrated SVM | Feature extraction + classification |
+| Experiment tracking | MLflow 3.x | Run logging, artifact storage, model registry |
+| Data versioning | DVC 3 | Reproducible pipeline stages, data versioning |
+| Drift monitoring | Evidently AI (PSI) | Distribution shift detection |
+| Serving | FastAPI + Uvicorn | REST inference API with auto-generated docs |
 | Testing | Pytest + httpx | 71 tests across data, model, and API layers |
 | CI/CD | GitHub Actions | 4-job automated pipeline |
-| Containerization | Docker (multi-stage) + docker-compose | Reproducible builds, local orchestration |
+| Containerisation | Docker (multi-stage) + docker-compose | Reproducible builds, local orchestration |
 | Registry | DockerHub | Public image distribution |
 
 ---
 
-## 🧩 Extending the Pipeline
+## Extending the Pipeline
 
-The pipeline is designed to be extended. Here are three common additions:
-
-### Add a DistilBERT Fine-Tuned Model
+### Add a DistilBERT fine-tuned model
 
 ```python
 # params.yaml
 model:
   type: "distilbert"
 
-# src/train.py — add a training branch:
+# src/train.py
 from transformers import DistilBertForSequenceClassification, Trainer, TrainingArguments
 # HuggingFace Trainer integrates with MLflow autologging out of the box
 ```
 
-### Add Remote DVC Storage (S3 / GCS / Azure)
+### Add remote DVC storage (S3 / GCS / Azure)
 
 ```bash
 dvc remote add myremote s3://your-bucket/mlops-data
 dvc remote default myremote
-dvc push    # push data artifacts to the remote
+dvc push
 ```
 
-This enables full reproducibility across machines and teams without committing data to Git.
-
-### Add Prometheus Metrics to the API
+### Add Prometheus metrics to the API
 
 ```python
 # src/serve.py
 from prometheus_fastapi_instrumentator import Instrumentator
 Instrumentator().instrument(app).expose(app)
-
 # Scrape at: GET /metrics
 ```
 
@@ -573,28 +544,24 @@ Pair with Grafana for a real-time dashboard of prediction latency, request rate,
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
-Pull requests are welcome. For major changes, open an issue first to discuss the proposed change. Please ensure all 71 tests pass before submitting a PR.
+Pull requests are welcome. For major changes, open an issue first to discuss the proposed direction. All 71 tests must pass before a PR is merged.
 
 ```bash
-# Fork → Clone → Create branch
 git checkout -b feature/your-feature
-
-# Make changes, then verify
+# make changes
 pytest tests/ -v
-
-# Commit with conventional commits
 git commit -m "feat: add your feature"
 git push origin feature/your-feature
-# Open a Pull Request
+# open a pull request
 ```
 
 ---
 
-## 📄 License
+## License
 
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE) for details.
 
 ---
 
